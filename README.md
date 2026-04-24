@@ -15,7 +15,6 @@ A real-time speech-to-text web application built using React, Node.js, and Deepg
 
 Frontend:
 - React.js
-- CSS / Tailwind / Bootstrap (mention yours)
 
 Backend:
 - Node.js
