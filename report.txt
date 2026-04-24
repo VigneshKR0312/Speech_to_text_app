@@ -1,0 +1,278 @@
+REPORT: Code Walkthrough (Short Terms)
+
+Files covered:
+- frontend/app.js
+- backend/server.js
+- frontend/client.js
+
+==================================================
+1) frontend/app.js
+==================================================
+
+What this file does:
+- Runs a tiny HTTP server on port 3000.
+- Serves frontend static files (index.html, client.js, css).
+
+Line-by-line:
+- L1: Imports Node HTTP module to create a web server.
+- L2: Imports File System module to read files from disk.
+- L3: Imports Path module to safely build file paths.
+- L5: Sets frontend server port to 3000.
+- L6: Stores current folder as static-file root.
+- L8-L12: Maps file extension to response content-type.
+- L14: Creates HTTP server with request handler callback.
+- L15: If URL is "/", use "/index.html"; else use requested path.
+- L16: Normalizes path and strips path-traversal attempts ("../").
+- L17: Builds absolute file path under frontend root.
+- L19: Reads requested file from disk.
+- L20-L24: If file missing/read error, return 404 text.
+- L25: Gets extension of requested file.
+- L26: Returns 200 with correct content-type (or binary fallback).
+- L27: Sends file content to browser.
+- L29: Ends server callback block.
+- L31: Starts server listening on configured port.
+- L32: Prints startup URL in terminal.
+
+Process flow:
+1) Browser requests page -> 2) Server maps URL to file -> 3) Reads file -> 4) Sends file.
+
+==================================================
+2) backend/server.js
+==================================================
+
+What this file does:
+- Runs WebSocket backend on port 5000.
+- Accepts live PCM chunks from frontend.
+- Opens a second WebSocket to Deepgram.
+- Forwards audio to Deepgram and sends transcripts back to frontend.
+
+Line-by-line:
+- L1: Imports ws package for WebSocket server/client.
+- L2: Imports path for env-file path handling.
+- L3: Loads env vars from backend/.env (includes DEEPGRAM_API_KEY).
+- L5: Backend WebSocket listen port.
+- L6: Creates WebSocket server for frontend clients.
+- L7: Defines max accepted chunk size (1MB safety guard).
+- L8: Counter to assign session IDs for debug logs.
+
+- L10: Runs per connected frontend client socket.
+- L11: Assigns unique session ID.
+- L12: Tracks number of chunks in this session.
+- L13: Tracks total bytes in this session.
+- L14: Logs client connect event.
+- L15: Placeholder for Deepgram socket instance.
+- L16: Tracks whether Deepgram socket is open/ready.
+- L17: Stores latest partial transcript.
+- L18: Stops repeated deepgram reconnect attempts after failure.
+- L19: Counts total Deepgram Results messages.
+- L20: Counts Results messages with empty transcript.
+
+- L22: Helper function to send JSON message to frontend.
+- L23: Ensures frontend socket is open before sending.
+- L24: Sends payload as stringified JSON.
+
+- L28: Function to open Deepgram live stream.
+- L29: Reads Deepgram API key from env.
+- L30: Logs stream-open attempt and sample rate.
+- L31-L38: If no API key, send error to frontend and return.
+- L39-L41: If Deepgram socket already exists, skip duplicate open.
+
+- L43-L47: Builds Deepgram listen URL + query params.
+  - encoding linear16, sample rate, 1 channel, interim/final behavior.
+- L48: Logs URL-ready step.
+
+- L50-L54: Creates outbound WebSocket to Deepgram with auth header.
+
+- L56-L61: On Deepgram open:
+  - mark ready
+  - reset failure flag
+  - log and notify frontend status.
+
+- L63: Handles every message from Deepgram.
+- L65: Parses Deepgram JSON payload.
+- L66-L71: If non-Results event, log type and skip.
+- L72: Increment results counter.
+- L73: Extract transcript text from top alternative.
+- L74-L103: If transcript empty:
+  - increment empty counter
+  - log speech_final/is_final/confidence/words periodically
+  - log a small payload sample for early debugging
+  - return.
+- L104-L109: If final transcript:
+  - clear partial cache
+  - log final text
+  - send final transcript to frontend.
+- L110-L115: Else partial transcript:
+  - update cache
+  - log occasionally
+  - send partial transcript to frontend.
+- L116-L117: Log parse errors.
+
+- L120-L130: On Deepgram socket error:
+  - log error
+  - detect 401 unauthorized
+  - set failure flag
+  - send user-friendly error to frontend.
+
+- L132-L138: On Deepgram socket close:
+  - set not-ready
+  - clear socket ref
+  - log close code/reason.
+
+- L141: Helper to close Deepgram stream cleanly.
+- L142-L144: If no deepgram socket, return.
+- L145-L148: If open, send Finalize and CloseStream control messages.
+- L149-L152: Close socket and reset flags.
+
+- L154: Handles messages from frontend socket.
+- L155-L169: If control (non-binary) message:
+  - parse JSON
+  - log control payload
+  - start: reset failure and open Deepgram stream
+  - stop: close Deepgram stream
+  - on parse fail: log warning
+  - return.
+
+- L171: Binary payload treated as audio chunk.
+- L172-L174: Compute chunk byte length.
+- L176-L180: Enforce max-chunk limit; close if too large.
+- L182-L184: Increment chunk counters.
+- L185-L188: Periodic chunk logging.
+- L189-L191: Open deepgram stream if needed (and no fail flag).
+- L192-L194: If deepgram ready, forward chunk.
+- L194-L200: Else log chunk not forwarded due to ready/state.
+
+- L203-L205: Logs frontend socket errors.
+- L207-L212: On frontend disconnect:
+  - close deepgram stream
+  - print session summary (chunks/bytes).
+
+- L215-L217: Server-level WebSocket error handler.
+- L219: Graceful shutdown function.
+- L220: Logs shutdown start.
+- L221-L225: Closes all connected clients with server-shutdown code.
+- L226: Closes WebSocket server and exits process.
+- L229-L230: Hooks Ctrl+C / SIGTERM to graceful shutdown.
+- L232: Prints backend startup URL.
+
+Process flow:
+1) Frontend connects -> 2) Sends start + audio chunks -> 3) Backend opens Deepgram socket ->
+4) Backend forwards chunks -> 5) Deepgram returns partial/final text ->
+6) Backend forwards transcripts to frontend -> 7) stop/disconnect closes stream.
+
+==================================================
+3) frontend/client.js
+==================================================
+
+What this file does:
+- Browser-side live audio capture and streaming.
+- Connects to backend WebSocket.
+- Sends PCM chunks.
+- Receives transcript/status/error events and updates UI.
+
+Line-by-line:
+- L1-L4: Grabs button/status/error/transcript DOM elements.
+- L6-L11: Runtime refs for stream/socket/audio graph nodes.
+- L12-L13: Stores final and partial transcript text.
+- L14: Timestamp guard to limit send frequency.
+- L15-L16: Counters for sent chunk stats.
+- L18: Backend WebSocket URL.
+
+- L20: Helper to connect WS with timeout.
+- L21-L37: Creates socket + timeout guard:
+  - resolve on open
+  - reject on error or timeout.
+
+- L39-L41: Updates status text in UI.
+- L43-L45: Updates error text in UI.
+
+- L47: Re-renders transcript panel.
+- L48-L50: Combines final + partial text and autoscrolls.
+
+- L53: Handles incoming WS messages from backend.
+- L55: Parse message JSON.
+- L56-L70: Transcript branch:
+  - detect final or partial
+  - final: append to committed text, clear partial
+  - partial: update in-progress text
+  - update status + console logs
+  - render output.
+- L71-L75: Error branch:
+  - log error
+  - show error in UI.
+- L76-L79: Status branch:
+  - log and show status.
+- L80-L82: If non-JSON message, log raw data.
+
+- L85: Converts float samples to 16-bit PCM samples.
+- L86-L91: Clamps sample and maps to signed int16 range.
+
+- L94: Cleanup audio graph helper.
+- L95-L99: Disconnect and clear ScriptProcessor node.
+- L100-L103: Disconnect and clear MediaStream source node.
+- L104-L107: Close AudioContext.
+- L108-L111: Stop microphone tracks and clear stream ref.
+
+- L114: Cleanup socket helper.
+- L115-L118: Close WS and clear ref.
+
+- L121: Stop streaming function.
+- L122-L124: Sends "stop" control if socket open.
+- L125-L127: Logs sent chunk summary.
+- L128-L129: Cleanup audio and socket.
+- L130-L134: Reset button/UI status to idle.
+
+- L137: Start streaming function.
+- L138-L143: Reset errors/counters/transcript display.
+- L145: Request microphone permission/audio stream.
+- L146: Show connecting status with backend URL.
+- L147: Open WebSocket to backend.
+- L148: Log successful engine connection.
+
+- L150: Attach message handler.
+- L151-L154: Attach socket error handler.
+- L155-L162: Attach socket close handler.
+
+- L164: Start audio pipeline helper.
+- L165-L167: Create low-latency AudioContext.
+- L168: Read actual sample rate from browser.
+- L169: Send start control with sample rate.
+
+- L171: Build MediaStream source node from mic stream.
+- L173: Create ScriptProcessor with frame size 2048.
+
+- L175: On each audio process callback:
+  - L176-L180: lightweight time gate to avoid over-send.
+  - L181: read channel-0 float samples.
+  - L182: convert to PCM int16.
+  - L183-L199: if socket open:
+    - send binary audio chunk
+    - update chunk stats
+    - periodic logging.
+
+- L202-L203: Connect source -> processor.
+- L203: Connect processor -> destination (keeps processing active).
+- L205-L209: Update button and status to active streaming.
+
+- L212-L216: If socket already open, start pipeline immediately; else wait on onopen.
+- L217-L220: Catch errors (permission, connect, etc.), show error and cleanup.
+
+- L223-L229: Toggle button click:
+  - stop if already streaming
+  - else start.
+
+- L231-L233: On page unload, stop stream for clean shutdown.
+
+Process flow:
+1) Click Start -> 2) get mic + WS connect -> 3) send start control ->
+4) send binary PCM chunks continuously -> 5) receive transcript events ->
+6) render transcript live -> 7) Stop sends stop + cleanup.
+
+==================================================
+Overall Combined Pipeline
+==================================================
+
+1) frontend/app.js serves page and JS.
+2) browser (client.js) captures mic and streams PCM to backend/server.js.
+3) backend/server.js relays PCM to Deepgram and relays transcript back.
+4) client.js shows live partial/final transcript in UI and console.
