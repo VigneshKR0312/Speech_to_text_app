@@ -18,7 +18,6 @@ Frontend:
 
 Backend:
 - Node.js
-- Express.js
 
 API:
 - Deepgram Speech Recognition API
